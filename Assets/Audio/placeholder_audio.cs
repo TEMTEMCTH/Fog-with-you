@@ -1,6 +1,6 @@
 using UnityEngine;
 
-public class Audio
+public class placeholder_audio
 {
     
 }

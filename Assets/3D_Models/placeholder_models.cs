@@ -1,6 +1,6 @@
 using UnityEngine;
 
-public class placeholder
+public class placeholder_models
 {
     
 }
