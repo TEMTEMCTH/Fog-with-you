@@ -1,59 +1,69 @@
+using Unity.Netcode;
 using UnityEngine;
 
-[RequireComponent(typeof(CharacterController))]
-public class PlayerController : MonoBehaviour
+public class PlayerMove : NetworkBehaviour
 {
-    public float moveSpeed = 6f;
-    public float gravity = -9.81f;
-    public Transform cameraTransform;
-    public float mouseSensitivity = 2f;
-    public float maxLookAngle = 80f;
-
-    private CharacterController controller;
-    private Vector3 velocity;
+    public float speed = 5f;
+    public float mouseSensitivity = 1.5f; // Настрой в инспекторе
     private float xRotation = 0f;
+    private Camera myCam;
+    private Vector3 lastMousePos;
 
     void Start()
     {
-        controller = GetComponent<CharacterController>();
-        Cursor.lockState = CursorLockMode.Locked;
-        Cursor.visible = false;
-
-        // Если камера не назначена, попробуем найти её автоматически
-        if (cameraTransform == null)
+        if (IsOwner)
         {
-            cameraTransform = Camera.main.transform;
-            Debug.Log("Camera Transform был назначен автоматически.");
+            // Ищем камеру или создаем, если её нет
+            myCam = GetComponentInChildren<Camera>();
+            if (myCam == null)
+            {
+                GameObject camObj = new GameObject("PlayerCamera");
+                camObj.transform.SetParent(transform);
+                camObj.transform.localPosition = new Vector3(0, 0.5f, 0);
+                myCam = camObj.AddComponent<Camera>();
+                camObj.AddComponent<AudioListener>();
+            }
+
+            // НЕ ПРЯЧЕМ КУРСОР, чтобы обойти баг с осью X
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+
+            // Запоминаем начальную позицию мыши
+            lastMousePos = Input.mousePosition;
         }
     }
 
     void Update()
     {
-        // Вращение мышью
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
+        if (!IsOwner) return;
 
+        // 1. СЧИТЫВАЕМ ПОЗИЦИЮ КУРСОРА НА ЭКРАНЕ
+        Vector3 currentMousePos = Input.mousePosition;
+
+        // 2. ВЫЧИСЛЯЕМ СМЕЩЕНИЕ (разницу между кадрами)
+        float mouseX = (currentMousePos.x - lastMousePos.x) * mouseSensitivity * 0.1f;
+        float mouseY = (currentMousePos.y - lastMousePos.y) * mouseSensitivity * 0.1f;
+
+        // 3. КРУТИМ ТЕЛО ВЛЕВО-ВПРАВО
         transform.Rotate(Vector3.up * mouseX);
 
+        // 4. КРУТИМ КАМЕРУ ВВЕРХ-ВНИЗ
         xRotation -= mouseY;
-        xRotation = Mathf.Clamp(xRotation, -maxLookAngle, maxLookAngle);
-        cameraTransform.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
+        xRotation = Mathf.Clamp(xRotation, -90f, 90f);
 
-        // Движение WASD
-        float x = Input.GetAxis("Horizontal");
-        float z = Input.GetAxis("Vertical");
-
-        // Важно: используем TransformDirection для правильного учёта поворота
-        Vector3 move = transform.TransformDirection(new Vector3(x, 0, z)) * moveSpeed;
-
-        // Гравитация (применяем всегда, чтобы персонаж не «висел»)
-        if (controller.isGrounded && velocity.y < 0)
+        if (myCam != null)
         {
-            velocity.y = -2f;
+            myCam.transform.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
         }
-        velocity.y += gravity * Time.deltaTime;
 
-        // Объединяем движение и гравитацию в один вызов Move
-        controller.Move((move + new Vector3(0, velocity.y, 0)) * Time.deltaTime);
+        // 5. ДВИЖЕНИЕ WASD
+        float moveX = Input.GetAxis("Horizontal");
+        float moveZ = Input.GetAxis("Vertical");
+
+        Vector3 move = transform.right * moveX + transform.forward * moveZ;
+        transform.Translate(move * speed * Time.deltaTime);
+
+        // Обновляем последнюю позицию мыши для следующего кадра
+        lastMousePos = currentMousePos;
     }
 }
