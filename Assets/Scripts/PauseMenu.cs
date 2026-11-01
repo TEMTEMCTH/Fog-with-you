@@ -1,253 +1,237 @@
-using System.Collections;
 using Unity.Netcode;
-using Unity.Services.Multiplayer;
 using UnityEngine;
-using UnityEngine.Events;
-using UnityEngine.EventSystems;
-using UnityEngine.SceneManagement;
-using UnityEngine.UI;
-#if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
+#if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
-using UnityEngine.InputSystem.UI;
 #endif
 
 /// <summary>
-/// Меню паузы (Escape): код игры для друзей, «Продолжить» и «Выйти в главное меню».
-/// Повесьте на пустой объект в ИГРОВОЙ сцене. Интерфейс строится кодом.
-/// Игра не останавливается (это кооператив) — просто освобождается курсор
-/// и блокируется управление своим персонажем.
+/// Движение персонажа от первого лица + вращение камерой мышью + приседание (Ctrl)
+/// + расход выносливости (PlayerStamina, необязательна).
+/// Рассчитан на кооператив (Netcode for GameObjects):
+/// управление и камера работают только у владельца (Owner) персонажа,
+/// позиция синхронизируется через ClientNetworkTransform.
+/// Курсором во время паузы управляет PauseMenu.
 /// </summary>
-public class PauseMenu : MonoBehaviour
+[RequireComponent(typeof(CharacterController))]
+public class PlayerController : NetworkBehaviour
 {
-    /// <summary>Открыто ли меню паузы (читает PlayerController).</summary>
-    public static bool IsOpen { get; private set; }
+    [Header("Движение")]
+    [SerializeField] private float walkSpeed = 4f;
+    [SerializeField] private float sprintSpeed = 7f;
+    [SerializeField] private float crouchSpeed = 2f;
+    [SerializeField] private float acceleration = 12f;
+    [SerializeField] private float jumpHeight = 1.2f;
+    [SerializeField] private float gravity = -20f;
 
-    /// <summary>Сообщение, которое покажет главное меню после выхода из игры.</summary>
-    public static string MenuMessage;
+    [Header("Приседание (Ctrl)")]
+    [SerializeField] private float crouchHeight = 1.2f;
+    [SerializeField] private float crouchTransitionSpeed = 6f;   // метров в секунду
 
-    /// <summary>Текущая онлайн-сессия (null для локальной игры). Её задаёт MainMenu.</summary>
-    public static ISession CurrentSession;
+    [Header("Камера")]
+    [SerializeField] private Transform cameraPivot;      // пустой объект на уровне головы
+    [SerializeField] private Camera playerCamera;        // камера — дочерняя к cameraPivot
+    [SerializeField] private float mouseSensitivity = 2f;
+    [SerializeField] private float minPitch = -85f;
+    [SerializeField] private float maxPitch = 85f;
 
-    [SerializeField] private string menuSceneName = "MainMenu";
+    private CharacterController controller;
+    private PlayerStamina stamina;
+    private Vector3 horizontalVelocity;
+    private float verticalVelocity;
+    private float pitch;
 
-    private Font font;
-    private GameObject panel;
-    private Text hintText;
-    private Text codeText;
-    private Button copyButton;
-    private bool leaving;
+    // Приседание
+    private float standHeight;
+    private Vector3 standCenter;
+    private float standPivotY;
+    private bool crouching;
 
-    private readonly Color buttonColor = new Color(0.16f, 0.2f, 0.27f);
-    private readonly Color textColor = new Color(0.88f, 0.92f, 0.96f);
+    // Присел ли игрок — видят все (пригодится, например, чтобы монстр хуже замечал присевших)
+    private NetworkVariable<bool> isCrouching;
+    public bool IsCrouching => isCrouching.Value;
 
-    private void Start()
+    private void Awake()
     {
-        IsOpen = false;
+        controller = GetComponent<CharacterController>();
+        stamina = GetComponent<PlayerStamina>();
+        standHeight = controller.height;
+        standCenter = controller.center;
 
-        font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        if (font == null) font = Font.CreateDynamicFontFromOSFont("Arial", 28);
-
-        EnsureEventSystem();
-        BuildUI();
-        panel.SetActive(false);
-
-        if (NetworkManager.Singleton != null)
-            NetworkManager.Singleton.OnClientDisconnectCallback += HandleDisconnect;
+        isCrouching = new NetworkVariable<bool>(
+            false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
     }
 
-    private void OnDestroy()
+    public override void OnNetworkSpawn()
     {
-        IsOpen = false;
-        if (NetworkManager.Singleton != null)
-            NetworkManager.Singleton.OnClientDisconnectCallback -= HandleDisconnect;
+        if (!IsOwner)
+        {
+            // Чужие персонажи: без камеры, звука и обработки ввода
+            if (playerCamera != null)
+            {
+                playerCamera.enabled = false;
+                var listener = playerCamera.GetComponent<AudioListener>();
+                if (listener != null) listener.enabled = false;
+            }
+            enabled = false;
+            return;
+        }
+
+        if (cameraPivot == null || playerCamera == null)
+        {
+            Debug.LogError("PlayerController: не назначены Camera Pivot и/или Player Camera в инспекторе префаба!", this);
+            return;
+        }
+
+        // Отключаем все остальные камеры сцены
+        foreach (var cam in FindObjectsByType<Camera>(FindObjectsSortMode.None))
+        {
+            if (cam != playerCamera)
+            {
+                cam.enabled = false;
+                var l = cam.GetComponent<AudioListener>();
+                if (l != null) l.enabled = false;
+            }
+        }
+
+        playerCamera.enabled = true;
+        var myListener = playerCamera.GetComponent<AudioListener>();
+        if (myListener != null) myListener.enabled = true;
+
+        pitch = cameraPivot.localEulerAngles.x;
+        if (pitch > 180f) pitch -= 360f;
+        standPivotY = cameraPivot.localPosition.y;
+
+        SetCursorLock(true);
     }
 
     private void Update()
     {
-        if (leaving) return;
-        if (EscapePressed())
-            SetOpen(!IsOpen);
+        if (cameraPivot == null) return;
+
+        bool paused = PauseMenu.IsOpen;
+
+        // Курсор потерян (например, клик вне окна игры) — возвращаем кликом
+        if (!paused && Cursor.lockState != CursorLockMode.Locked && ClickPressed())
+            SetCursorLock(true);
+
+        if (!paused && Cursor.lockState == CursorLockMode.Locked)
+            HandleLook();
+
+        HandleCrouch(paused);
+        HandleMovement(paused);
     }
 
-    private void SetOpen(bool open)
+    private void HandleLook()
     {
-        IsOpen = open;
-        panel.SetActive(open);
+        Vector2 look = GetLookInput() * mouseSensitivity;
 
-        var nm = NetworkManager.Singleton;
-        hintText.text = (open && nm != null && nm.IsHost)
-            ? "Вы хост: если выйдете, игра закончится для всех."
-            : "";
+        transform.Rotate(Vector3.up * look.x);
 
-        // Код онлайн-игры (если играем через интернет)
-        string code = CurrentSession != null ? CurrentSession.Code : null;
-        bool hasCode = !string.IsNullOrEmpty(code);
-        codeText.gameObject.SetActive(hasCode);
-        copyButton.gameObject.SetActive(hasCode);
-        if (hasCode) codeText.text = "Код игры: " + code;
-
-        Cursor.lockState = open ? CursorLockMode.None : CursorLockMode.Locked;
-        Cursor.visible = open;
+        pitch = Mathf.Clamp(pitch - look.y, minPitch, maxPitch);
+        cameraPivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
     }
 
-    // ───────────── Кнопки ─────────────
-
-    private void OnResumeClicked() => SetOpen(false);
-
-    private void OnCopyClicked()
+    private void HandleCrouch(bool paused)
     {
-        if (CurrentSession == null) return;
-        GUIUtility.systemCopyBuffer = CurrentSession.Code;
-        hintText.text = "Код скопирован! Отправьте его друзьям.";
+        bool wantCrouch = !paused && CrouchHeld();
+
+        if (wantCrouch) crouching = true;
+        else if (crouching && CanStandUp()) crouching = false;   // под потолком встать нельзя
+
+        if (isCrouching.Value != crouching)
+            isCrouching.Value = crouching;
+
+        // Плавно меняем высоту контроллера, ноги остаются на месте
+        float targetHeight = crouching ? crouchHeight : standHeight;
+        float h = Mathf.MoveTowards(controller.height, targetHeight, crouchTransitionSpeed * Time.deltaTime);
+        float bottom = standCenter.y - standHeight / 2f;
+        controller.height = h;
+        controller.center = new Vector3(standCenter.x, bottom + h / 2f, standCenter.z);
+
+        // Камера опускается вместе с макушкой
+        var p = cameraPivot.localPosition;
+        cameraPivot.localPosition = new Vector3(p.x, standPivotY - (standHeight - h), p.z);
     }
 
-    private void OnLeaveClicked()
+    private bool CanStandUp()
     {
-        MenuMessage = null;
-        StartCoroutine(LeaveRoutine());
+        float radius = controller.radius * 0.9f;
+        Vector3 origin = transform.position + controller.center
+                         + Vector3.up * (controller.height / 2f - controller.radius);
+        float distance = (standHeight - controller.height) + 0.05f;
+        return !Physics.SphereCast(origin, radius, Vector3.up, out _, distance, ~0,
+            QueryTriggerInteraction.Ignore);
     }
 
-    // Клиента выкинуло (например, хост закрыл игру) — возвращаемся в меню
-    private void HandleDisconnect(ulong clientId)
+    private void HandleMovement(bool paused)
     {
-        var nm = NetworkManager.Singleton;
-        if (nm == null || nm.IsServer || leaving) return;
+        Vector2 input = paused ? Vector2.zero : Vector2.ClampMagnitude(GetMoveInput(), 1f);
+        bool moving = input.sqrMagnitude > 0.01f;
 
-        MenuMessage = string.IsNullOrEmpty(nm.DisconnectReason)
-            ? "Соединение с хостом потеряно."
-            : "Отключено: " + nm.DisconnectReason;
-        StartCoroutine(LeaveRoutine());
-    }
-
-    private IEnumerator LeaveRoutine()
-    {
-        leaving = true;
-        IsOpen = false;
-
-        // Сначала выходим из онлайн-сессии (освобождаем Relay)
-        var session = CurrentSession;
-        CurrentSession = null;
-        if (session != null)
+        // Бег: нужна выносливость, присев — не побежишь
+        bool sprinting = false;
+        if (!paused && !crouching && moving && SprintHeld() && (stamina == null || stamina.CanSprint))
         {
-            var leave = session.LeaveAsync();
-            while (!leave.IsCompleted) yield return null;
-            if (leave.IsFaulted) Debug.LogWarning("Не удалось корректно выйти из сессии: " + leave.Exception?.GetBaseException().Message);
+            sprinting = true;
+            if (stamina != null) stamina.Drain(stamina.SprintDrainPerSecond * Time.deltaTime);
         }
 
-        // NetworkManager переживает смену сцен, поэтому удаляем его:
-        // в главном меню появится свежий, без остатков прошлой игры.
-        var nm = NetworkManager.Singleton;
-        if (nm != null)
+        float targetSpeed = crouching ? crouchSpeed : (sprinting ? sprintSpeed : walkSpeed);
+        Vector3 targetVelocity = (transform.right * input.x + transform.forward * input.y) * targetSpeed;
+
+        horizontalVelocity = Vector3.MoveTowards(
+            horizontalVelocity, targetVelocity, acceleration * Mathf.Max(targetSpeed, walkSpeed) * Time.deltaTime);
+
+        if (controller.isGrounded && verticalVelocity < 0f)
+            verticalVelocity = -2f;
+
+        // Прыжок: нельзя в приседе, стоит выносливости
+        if (!paused && !crouching && controller.isGrounded && JumpPressed()
+            && (stamina == null || stamina.TrySpend(stamina.JumpCost)))
         {
-            if (nm.IsListening) nm.Shutdown();
-            Destroy(nm.gameObject);
+            verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
         }
 
-        yield return null;
-        SceneManager.LoadScene(menuSceneName);
+        verticalVelocity += gravity * Time.deltaTime;
+
+        Vector3 velocity = horizontalVelocity + Vector3.up * verticalVelocity;
+        controller.Move(velocity * Time.deltaTime);
     }
 
-    // ───────────── Ввод ─────────────
-
-    private bool EscapePressed()
+    private void SetCursorLock(bool locked)
     {
+        Cursor.lockState = locked ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = !locked;
+    }
+
+    // ───────────── Ввод (поддержка обеих систем) ─────────────
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
-        return Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame;
+    private Vector2 GetLookInput()
+    {
+        if (Mouse.current == null) return Vector2.zero;
+        return Mouse.current.delta.ReadValue() * 0.05f;
+    }
+
+    private Vector2 GetMoveInput()
+    {
+        var k = Keyboard.current;
+        if (k == null) return Vector2.zero;
+        float x = (k.dKey.isPressed ? 1f : 0f) - (k.aKey.isPressed ? 1f : 0f);
+        float y = (k.wKey.isPressed ? 1f : 0f) - (k.sKey.isPressed ? 1f : 0f);
+        return new Vector2(x, y);
+    }
+
+    private bool SprintHeld()   => Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
+    private bool CrouchHeld()   => Keyboard.current != null &&
+                                   (Keyboard.current.leftCtrlKey.isPressed || Keyboard.current.rightCtrlKey.isPressed);
+    private bool JumpPressed()  => Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
+    private bool ClickPressed() => Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
 #else
-        return Input.GetKeyDown(KeyCode.Escape);
+    private Vector2 GetLookInput() => new Vector2(Input.GetAxisRaw("Mouse X"), Input.GetAxisRaw("Mouse Y"));
+    private Vector2 GetMoveInput() => new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+    private bool SprintHeld() => Input.GetKey(KeyCode.LeftShift);
+    private bool CrouchHeld() => Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+    private bool JumpPressed() => Input.GetButtonDown("Jump");
+    private bool ClickPressed() => Input.GetMouseButtonDown(0);
 #endif
-    }
-
-    // ───────────── Интерфейс ─────────────
-
-    private void EnsureEventSystem()
-    {
-        if (FindFirstObjectByType<EventSystem>() != null) return;
-
-        var go = new GameObject("EventSystem", typeof(EventSystem));
-#if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
-        go.AddComponent<InputSystemUIInputModule>();
-#else
-        go.AddComponent<StandaloneInputModule>();
-#endif
-    }
-
-    private void BuildUI()
-    {
-        var canvasGo = new GameObject("PauseCanvas");
-        var canvas = canvasGo.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = 100;
-        var scaler = canvasGo.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920, 1080);
-        scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-        scaler.matchWidthOrHeight = 0.5f;
-        canvasGo.AddComponent<GraphicRaycaster>();
-
-        var rt = CreateRect("Panel", canvasGo.transform, Vector2.zero, Vector2.zero);
-        rt.anchorMin = Vector2.zero;
-        rt.anchorMax = Vector2.one;
-        rt.offsetMin = rt.offsetMax = Vector2.zero;
-        rt.gameObject.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.65f);
-        panel = rt.gameObject;
-
-        var size = new Vector2(500, 80);
-        CreateText("Title", rt, "Пауза", 90, new Vector2(0, 270), new Vector2(900, 120),
-            TextAnchor.MiddleCenter, textColor);
-        codeText = CreateText("Code", rt, "", 52, new Vector2(0, 170), new Vector2(1200, 80),
-            TextAnchor.MiddleCenter, new Color(0.6f, 0.85f, 1f));
-        CreateButton("ResumeButton", rt, "Продолжить", new Vector2(0, 60), size, OnResumeClicked);
-        copyButton = CreateButton("CopyButton", rt, "Копировать код", new Vector2(0, -45), size, OnCopyClicked);
-        CreateButton("LeaveButton", rt, "Выйти в главное меню", new Vector2(0, -150), size, OnLeaveClicked);
-        hintText = CreateText("Hint", rt, "", 30, new Vector2(0, -250), new Vector2(1400, 50),
-            TextAnchor.MiddleCenter, new Color(0.95f, 0.75f, 0.45f));
-    }
-
-    private RectTransform CreateRect(string name, Transform parent, Vector2 pos, Vector2 size)
-    {
-        var go = new GameObject(name, typeof(RectTransform));
-        var rt = go.GetComponent<RectTransform>();
-        rt.SetParent(parent, false);
-        rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
-        rt.anchoredPosition = pos;
-        rt.sizeDelta = size;
-        return rt;
-    }
-
-    private Text CreateText(string name, Transform parent, string content, int fontSize,
-        Vector2 pos, Vector2 size, TextAnchor anchor, Color color)
-    {
-        var rt = CreateRect(name, parent, pos, size);
-        var t = rt.gameObject.AddComponent<Text>();
-        t.font = font;
-        t.text = content;
-        t.fontSize = fontSize;
-        t.alignment = anchor;
-        t.color = color;
-        t.raycastTarget = false;
-        t.horizontalOverflow = HorizontalWrapMode.Overflow;
-        t.verticalOverflow = VerticalWrapMode.Overflow;
-        return t;
-    }
-
-    private Button CreateButton(string name, Transform parent, string label, Vector2 pos, Vector2 size, UnityAction onClick)
-    {
-        var rt = CreateRect(name, parent, pos, size);
-        var img = rt.gameObject.AddComponent<Image>();
-        var btn = rt.gameObject.AddComponent<Button>();
-        btn.targetGraphic = img;
-
-        var colors = btn.colors;
-        colors.normalColor = buttonColor;
-        colors.highlightedColor = new Color(0.26f, 0.34f, 0.46f);
-        colors.pressedColor = new Color(0.12f, 0.15f, 0.2f);
-        colors.selectedColor = colors.highlightedColor;
-        btn.colors = colors;
-        img.color = Color.white;
-
-        CreateText("Label", rt, label, 34, Vector2.zero, size, TextAnchor.MiddleCenter, textColor);
-        btn.onClick.AddListener(onClick);
-        return btn;
-    }
 }

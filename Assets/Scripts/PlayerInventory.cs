@@ -38,6 +38,7 @@ public class PlayerInventory : NetworkBehaviour
 
     private Camera cam;
     private InventoryUI ui;
+    private PlayerStamina stamina;   // необязательна: если её нет на игроке, бросать можно без ограничений
     private PickupItem lookedAt;
     private GameObject heldRoot;
     private int selected;        // выбранный слот (на клиенте владельца)
@@ -74,6 +75,7 @@ public class PlayerInventory : NetworkBehaviour
         }
 
         ui = InventoryUI.Create(SlotCount);
+        stamina = GetComponent<PlayerStamina>();
     }
 
     public override void OnNetworkDespawn()
@@ -143,6 +145,14 @@ public class PlayerInventory : NetworkBehaviour
             ui.ShowMessage("В руке ничего нет");
             return;
         }
+
+        // Выбрасывание стоит выносливости
+        if (stamina != null && !stamina.TrySpend(stamina.DropCost))
+        {
+            ui.ShowMessage("Не хватает сил");
+            return;
+        }
+
         DropServerRpc(selected);
     }
 
@@ -332,7 +342,7 @@ public class PlayerInventory : NetworkBehaviour
     }
 #else
     private bool InteractPressed() => Input.GetKeyDown(KeyCode.E);
-    private bool DropPressed()     => Input.GetKeyDown(KeyCode.Q);
+    private bool DropPressed() => Input.GetKeyDown(KeyCode.Q);
 
     private int NumberPressed()
     {
