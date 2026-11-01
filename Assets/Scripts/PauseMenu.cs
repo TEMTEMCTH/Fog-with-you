@@ -1,5 +1,6 @@
 using System.Collections;
 using Unity.Netcode;
+using Unity.Services.Multiplayer;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
@@ -11,7 +12,7 @@ using UnityEngine.InputSystem.UI;
 #endif
 
 /// <summary>
-/// Меню паузы (Escape): «Продолжить» и «Выйти в главное меню».
+/// Меню паузы (Escape): код игры для друзей, «Продолжить» и «Выйти в главное меню».
 /// Повесьте на пустой объект в ИГРОВОЙ сцене. Интерфейс строится кодом.
 /// Игра не останавливается (это кооператив) — просто освобождается курсор
 /// и блокируется управление своим персонажем.
@@ -24,11 +25,16 @@ public class PauseMenu : MonoBehaviour
     /// <summary>Сообщение, которое покажет главное меню после выхода из игры.</summary>
     public static string MenuMessage;
 
+    /// <summary>Текущая онлайн-сессия (null для локальной игры). Её задаёт MainMenu.</summary>
+    public static ISession CurrentSession;
+
     [SerializeField] private string menuSceneName = "MainMenu";
 
     private Font font;
     private GameObject panel;
     private Text hintText;
+    private Text codeText;
+    private Button copyButton;
     private bool leaving;
 
     private readonly Color buttonColor = new Color(0.16f, 0.2f, 0.27f);
@@ -73,13 +79,27 @@ public class PauseMenu : MonoBehaviour
             ? "Вы хост: если выйдете, игра закончится для всех."
             : "";
 
+        // Код онлайн-игры (если играем через интернет)
+        string code = CurrentSession != null ? CurrentSession.Code : null;
+        bool hasCode = !string.IsNullOrEmpty(code);
+        codeText.gameObject.SetActive(hasCode);
+        copyButton.gameObject.SetActive(hasCode);
+        if (hasCode) codeText.text = "Код игры: " + code;
+
         Cursor.lockState = open ? CursorLockMode.None : CursorLockMode.Locked;
         Cursor.visible = open;
     }
 
-    // ───────────── Выход в главное меню ─────────────
+    // ───────────── Кнопки ─────────────
 
     private void OnResumeClicked() => SetOpen(false);
+
+    private void OnCopyClicked()
+    {
+        if (CurrentSession == null) return;
+        GUIUtility.systemCopyBuffer = CurrentSession.Code;
+        hintText.text = "Код скопирован! Отправьте его друзьям.";
+    }
 
     private void OnLeaveClicked()
     {
@@ -103,6 +123,16 @@ public class PauseMenu : MonoBehaviour
     {
         leaving = true;
         IsOpen = false;
+
+        // Сначала выходим из онлайн-сессии (освобождаем Relay)
+        var session = CurrentSession;
+        CurrentSession = null;
+        if (session != null)
+        {
+            var leave = session.LeaveAsync();
+            while (!leave.IsCompleted) yield return null;
+            if (leave.IsFaulted) Debug.LogWarning("Не удалось корректно выйти из сессии: " + leave.Exception?.GetBaseException().Message);
+        }
 
         // NetworkManager переживает смену сцен, поэтому удаляем его:
         // в главном меню появится свежий, без остатков прошлой игры.
@@ -155,7 +185,6 @@ public class PauseMenu : MonoBehaviour
         scaler.matchWidthOrHeight = 0.5f;
         canvasGo.AddComponent<GraphicRaycaster>();
 
-        // Панель на весь экран с затемнением
         var rt = CreateRect("Panel", canvasGo.transform, Vector2.zero, Vector2.zero);
         rt.anchorMin = Vector2.zero;
         rt.anchorMax = Vector2.one;
@@ -163,12 +192,15 @@ public class PauseMenu : MonoBehaviour
         rt.gameObject.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.65f);
         panel = rt.gameObject;
 
-        var size = new Vector2(460, 80);
-        CreateText("Title", rt, "Пауза", 90, new Vector2(0, 200), new Vector2(900, 120),
+        var size = new Vector2(500, 80);
+        CreateText("Title", rt, "Пауза", 90, new Vector2(0, 270), new Vector2(900, 120),
             TextAnchor.MiddleCenter, textColor);
-        CreateButton("ResumeButton", rt, "Продолжить", new Vector2(0, 50), size, OnResumeClicked);
-        CreateButton("LeaveButton", rt, "Выйти в главное меню", new Vector2(0, -60), size, OnLeaveClicked);
-        hintText = CreateText("Hint", rt, "", 30, new Vector2(0, -170), new Vector2(1400, 50),
+        codeText = CreateText("Code", rt, "", 52, new Vector2(0, 170), new Vector2(1200, 80),
+            TextAnchor.MiddleCenter, new Color(0.6f, 0.85f, 1f));
+        CreateButton("ResumeButton", rt, "Продолжить", new Vector2(0, 60), size, OnResumeClicked);
+        copyButton = CreateButton("CopyButton", rt, "Копировать код", new Vector2(0, -45), size, OnCopyClicked);
+        CreateButton("LeaveButton", rt, "Выйти в главное меню", new Vector2(0, -150), size, OnLeaveClicked);
+        hintText = CreateText("Hint", rt, "", 30, new Vector2(0, -250), new Vector2(1400, 50),
             TextAnchor.MiddleCenter, new Color(0.95f, 0.75f, 0.45f));
     }
 
