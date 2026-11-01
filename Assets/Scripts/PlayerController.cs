@@ -9,7 +9,7 @@ using UnityEngine.InputSystem;
 /// Рассчитан на кооператив (Netcode for GameObjects):
 /// управление и камера работают только у владельца (Owner) персонажа,
 /// позиция синхронизируется через ClientNetworkTransform.
-/// Работает и со старым Input Manager, и с новой Input System.
+/// Курсором во время паузы управляет PauseMenu.
 /// </summary>
 [RequireComponent(typeof(CharacterController))]
 public class PlayerController : NetworkBehaviour
@@ -32,7 +32,6 @@ public class PlayerController : NetworkBehaviour
     private Vector3 horizontalVelocity;
     private float verticalVelocity;
     private float pitch;
-    private bool cursorLocked;
 
     private void Awake()
     {
@@ -53,10 +52,6 @@ public class PlayerController : NetworkBehaviour
             enabled = false;
             return;
         }
-        // Поднимаем игрока при появлении, чтобы не застрять в земле
-        controller.enabled = false;
-        transform.position += Vector3.up * 1.1f;
-        controller.enabled = true;
 
         if (cameraPivot == null || playerCamera == null)
         {
@@ -64,7 +59,7 @@ public class PlayerController : NetworkBehaviour
             return;
         }
 
-        // Отключаем все остальные камеры сцены (например, стартовую Main Camera)
+        // Отключаем все остальные камеры сцены
         foreach (var cam in FindObjectsByType<Camera>(FindObjectsSortMode.None))
         {
             if (cam != playerCamera)
@@ -79,7 +74,6 @@ public class PlayerController : NetworkBehaviour
         var myListener = playerCamera.GetComponent<AudioListener>();
         if (myListener != null) myListener.enabled = true;
 
-        // Начальный наклон камеры берём из префаба
         pitch = cameraPivot.localEulerAngles.x;
         if (pitch > 180f) pitch -= 360f;
 
@@ -90,34 +84,34 @@ public class PlayerController : NetworkBehaviour
     {
         if (cameraPivot == null) return;
 
-        if (EscapePressed())
-            SetCursorLock(false);
-        else if (!cursorLocked && ClickPressed())
-            SetCursorLock(true);   // клик по окну игры — снова захватываем курсор
+        bool paused = PauseMenu.IsOpen;
 
-        if (cursorLocked)
+        // Курсор потерян (например, клик вне окна игры) — возвращаем кликом
+        if (!paused && Cursor.lockState != CursorLockMode.Locked && ClickPressed())
+            SetCursorLock(true);
+
+        if (!paused && Cursor.lockState == CursorLockMode.Locked)
             HandleLook();
 
-        HandleMovement();
+        HandleMovement(paused);
     }
 
     private void HandleLook()
     {
         Vector2 look = GetLookInput() * mouseSensitivity;
 
-        // Горизонталь — поворачиваем всё тело
         transform.Rotate(Vector3.up * look.x);
 
-        // Вертикаль — только камеру (с ограничением угла)
         pitch = Mathf.Clamp(pitch - look.y, minPitch, maxPitch);
         cameraPivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
     }
 
-    private void HandleMovement()
+    private void HandleMovement(bool paused)
     {
-        Vector2 input = Vector2.ClampMagnitude(GetMoveInput(), 1f);
+        // На паузе ввод игнорируем, но гравитация продолжает работать
+        Vector2 input = paused ? Vector2.zero : Vector2.ClampMagnitude(GetMoveInput(), 1f);
 
-        float targetSpeed = SprintHeld() ? sprintSpeed : walkSpeed;
+        float targetSpeed = (!paused && SprintHeld()) ? sprintSpeed : walkSpeed;
         Vector3 targetVelocity = (transform.right * input.x + transform.forward * input.y) * targetSpeed;
 
         horizontalVelocity = Vector3.MoveTowards(
@@ -126,7 +120,7 @@ public class PlayerController : NetworkBehaviour
         if (controller.isGrounded && verticalVelocity < 0f)
             verticalVelocity = -2f;
 
-        if (controller.isGrounded && JumpPressed())
+        if (!paused && controller.isGrounded && JumpPressed())
             verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
 
         verticalVelocity += gravity * Time.deltaTime;
@@ -137,7 +131,6 @@ public class PlayerController : NetworkBehaviour
 
     private void SetCursorLock(bool locked)
     {
-        cursorLocked = locked;
         Cursor.lockState = locked ? CursorLockMode.Locked : CursorLockMode.None;
         Cursor.visible = !locked;
     }
@@ -147,7 +140,7 @@ public class PlayerController : NetworkBehaviour
     private Vector2 GetLookInput()
     {
         if (Mouse.current == null) return Vector2.zero;
-        return Mouse.current.delta.ReadValue() * 0.05f; // масштаб ~ как у старого Input
+        return Mouse.current.delta.ReadValue() * 0.05f;
     }
 
     private Vector2 GetMoveInput()
@@ -159,16 +152,14 @@ public class PlayerController : NetworkBehaviour
         return new Vector2(x, y);
     }
 
-    private bool SprintHeld()    => Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
-    private bool JumpPressed()   => Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
-    private bool EscapePressed() => Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame;
-    private bool ClickPressed()  => Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
+    private bool SprintHeld()   => Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
+    private bool JumpPressed()  => Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
+    private bool ClickPressed() => Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
 #else
-    private Vector2 GetLookInput()  => new Vector2(Input.GetAxisRaw("Mouse X"), Input.GetAxisRaw("Mouse Y"));
-    private Vector2 GetMoveInput()  => new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
-    private bool SprintHeld()       => Input.GetKey(KeyCode.LeftShift);
-    private bool JumpPressed()      => Input.GetButtonDown("Jump");
-    private bool EscapePressed()    => Input.GetKeyDown(KeyCode.Escape);
-    private bool ClickPressed()     => Input.GetMouseButtonDown(0);
+    private Vector2 GetLookInput() => new Vector2(Input.GetAxisRaw("Mouse X"), Input.GetAxisRaw("Mouse Y"));
+    private Vector2 GetMoveInput() => new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+    private bool SprintHeld() => Input.GetKey(KeyCode.LeftShift);
+    private bool JumpPressed() => Input.GetButtonDown("Jump");
+    private bool ClickPressed() => Input.GetMouseButtonDown(0);
 #endif
 }
