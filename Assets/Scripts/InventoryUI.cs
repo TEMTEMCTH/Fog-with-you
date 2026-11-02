@@ -2,7 +2,7 @@ using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// Интерфейс инвентаря: панель слотов внизу экрана, подсказка «[E] Поднять», сообщения.
+/// Интерфейс инвентаря: компактная панель слотов в правом нижнем углу, подсказка «[E] Поднять», сообщения.
 /// Создаётся из PlayerInventory кодом — на сцену вешать ничего не нужно.
 /// </summary>
 public class InventoryUI : MonoBehaviour
@@ -64,43 +64,44 @@ public class InventoryUI : MonoBehaviour
         slotBackgrounds = new Image[slotCount];
         slotNames = new Text[slotCount];
 
-        const float slotW = 170f, slotH = 100f, gap = 12f;
-        float totalW = slotCount * slotW + (slotCount - 1) * gap;
+        // Слоты — в правом нижнем углу
+        const float slotW = 110f, slotH = 70f, gap = 8f, margin = 30f;
 
         for (int i = 0; i < slotCount; i++)
         {
-            float x = -totalW / 2f + slotW / 2f + i * (slotW + gap);
-            var rt = CreateRect("Slot" + i, transform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f),
-                new Vector2(x, 30f), new Vector2(slotW, slotH));
+            float x = -margin - (slotCount - 1 - i) * (slotW + gap);
+            var rt = CreateRect("Slot" + i, transform, new Vector2(1f, 0f), new Vector2(1f, 0f),
+                new Vector2(x, margin), new Vector2(slotW, slotH));
             slotBackgrounds[i] = rt.gameObject.AddComponent<Image>();
             slotBackgrounds[i].color = SlotColor;
 
-            var num = CreateText("Number", rt, (i + 1).ToString(), 22, TextAnchor.UpperLeft,
+            var num = CreateText("Number", rt, (i + 1).ToString(), 16, TextAnchor.UpperLeft,
                 new Color(0.7f, 0.75f, 0.8f));
-            Stretch(num.rectTransform, 6f);
+            Stretch(num.rectTransform, 5f);
 
-            var label = CreateText("Name", rt, "", 24, TextAnchor.MiddleCenter, Color.white);
-            Stretch(label.rectTransform, 6f);
+            var label = CreateText("Name", rt, "", 18, TextAnchor.MiddleCenter, Color.white);
+            Stretch(label.rectTransform, 5f);
             label.resizeTextForBestFit = true;
-            label.resizeTextMinSize = 12;
-            label.resizeTextMaxSize = 28;
+            label.resizeTextMinSize = 10;
+            label.resizeTextMaxSize = 20;
             slotNames[i] = label;
         }
 
-        // Подсказка «[E] Поднять: ...»
+        // Подсказка «[E] Поднять: ...» — по центру внизу, над шкалой выносливости
         promptText = CreateText("Prompt", transform, "", 36, TextAnchor.MiddleCenter, Color.white);
-        SetupAnchored(promptText.rectTransform, new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(1200f, 50f));
+        SetupAnchored(promptText.rectTransform, new Vector2(0.5f, 0f), new Vector2(0f, 110f), new Vector2(1200f, 50f));
         promptText.gameObject.AddComponent<Shadow>();
 
         // Сообщения («Инвентарь полон»)
         messageText = CreateText("Message", transform, "", 34, TextAnchor.MiddleCenter, new Color(0.95f, 0.75f, 0.45f));
-        SetupAnchored(messageText.rectTransform, new Vector2(0.5f, 0f), new Vector2(0f, 205f), new Vector2(1200f, 50f));
+        SetupAnchored(messageText.rectTransform, new Vector2(0.5f, 0f), new Vector2(0f, 165f), new Vector2(1200f, 50f));
         messageText.gameObject.AddComponent<Shadow>();
 
         // Подсказка по управлению
-        var hint = CreateText("Hint", transform, "E — поднять   Q — выбросить   1–" + slotCount + " — взять в руку",
+        var hint = CreateText("Hint", transform,
+            "E — поднять   Q — выбросить   1–" + slotCount + " — взять в руку   F — фонарик   Ctrl — присесть",
             24, TextAnchor.UpperLeft, new Color(0.8f, 0.85f, 0.9f, 0.8f));
-        SetupAnchored(hint.rectTransform, new Vector2(0f, 1f), new Vector2(20f, -20f), new Vector2(1200f, 40f));
+        SetupAnchored(hint.rectTransform, new Vector2(0f, 1f), new Vector2(20f, -20f), new Vector2(1500f, 40f));
         hint.gameObject.AddComponent<Shadow>();
     }
 

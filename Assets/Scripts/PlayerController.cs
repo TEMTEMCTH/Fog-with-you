@@ -6,7 +6,6 @@ using UnityEngine.InputSystem;
 
 /// <summary>
 /// Движение персонажа от первого лица + вращение камерой мышью + приседание (Ctrl)
-/// + расход выносливости (PlayerStamina, необязательна).
 /// Рассчитан на кооператив (Netcode for GameObjects):
 /// управление и камера работают только у владельца (Owner) персонажа,
 /// позиция синхронизируется через ClientNetworkTransform.
@@ -35,7 +34,6 @@ public class PlayerController : NetworkBehaviour
     [SerializeField] private float maxPitch = 85f;
 
     private CharacterController controller;
-    private PlayerStamina stamina;
     private Vector3 horizontalVelocity;
     private float verticalVelocity;
     private float pitch;
@@ -53,7 +51,6 @@ public class PlayerController : NetworkBehaviour
     private void Awake()
     {
         controller = GetComponent<CharacterController>();
-        stamina = GetComponent<PlayerStamina>();
         standHeight = controller.height;
         standCenter = controller.center;
 
@@ -168,13 +165,8 @@ public class PlayerController : NetworkBehaviour
         Vector2 input = paused ? Vector2.zero : Vector2.ClampMagnitude(GetMoveInput(), 1f);
         bool moving = input.sqrMagnitude > 0.01f;
 
-        // Бег: нужна выносливость, присев — не побежишь
-        bool sprinting = false;
-        if (!paused && !crouching && moving && SprintHeld() && (stamina == null || stamina.CanSprint))
-        {
-            sprinting = true;
-            if (stamina != null) stamina.Drain(stamina.SprintDrainPerSecond * Time.deltaTime);
-        }
+        // Бег: присев — не побежишь
+        bool sprinting = !paused && !crouching && moving && SprintHeld();
 
         float targetSpeed = crouching ? crouchSpeed : (sprinting ? sprintSpeed : walkSpeed);
         Vector3 targetVelocity = (transform.right * input.x + transform.forward * input.y) * targetSpeed;
@@ -185,9 +177,8 @@ public class PlayerController : NetworkBehaviour
         if (controller.isGrounded && verticalVelocity < 0f)
             verticalVelocity = -2f;
 
-        // Прыжок: нельзя в приседе, стоит выносливости
-        if (!paused && !crouching && controller.isGrounded && JumpPressed()
-            && (stamina == null || stamina.TrySpend(stamina.JumpCost)))
+        // Прыжок: нельзя в приседе
+        if (!paused && !crouching && controller.isGrounded && JumpPressed())
         {
             verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
         }
