@@ -5,60 +5,64 @@ using UnityEngine.InputSystem;
 #endif
 
 /// <summary>
-/// Фонарик (F — включить/выключить). Свет создаётся кодом, настраивать ничего не нужно.
-/// У владельца свет идёт из камеры (светит туда, куда вы смотрите),
-/// остальные игроки видят луч у вас сбоку, направленный вперёд.
-/// Вешается на префаб игрока.
+/// Фонарик как предмет: светит только когда он у игрока В РУКЕ (выбран в инвентаре) и включён клавишей F.
+/// В начале игры фонарик всегда выключен. Если убрать его из рук, он гаснет.
+/// У владельца свет идёт из камеры, остальные игроки видят луч у вас сбоку.
+/// Вешается на префаб игрока (вместе с PlayerInventory).
 /// </summary>
 public class PlayerFlashlight : NetworkBehaviour
 {
+    /// <summary>Item Id предмета-фонарика (должен совпадать с PickupItem на префабе предмета).</summary>
+    public const string ItemId = "flashlight";
+
     [Header("Свет")]
     [SerializeField] private float intensity = 30f;
     [SerializeField] private float range = 28f;
     [SerializeField] private float spotAngle = 60f;
     [SerializeField] private Color color = new Color(1f, 0.95f, 0.8f);
 
-    // Включён ли фонарик — видят все, переключает владелец
+    // Включён ли фонарик — видят все, переключает владелец. В начале игры выключен.
     private NetworkVariable<bool> isOn;
 
     private Camera cam;
     private Light flashlight;
+    private PlayerInventory inventory;
 
     private void Awake()
     {
         isOn = new NetworkVariable<bool>(
-            true, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+            false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
     }
 
     public override void OnNetworkSpawn()
     {
         cam = GetComponentInChildren<Camera>(true);
+        inventory = GetComponent<PlayerInventory>();
         BuildLight();
-
-        isOn.OnValueChanged += OnToggled;
-        ApplyState();
-
-        if (!IsOwner) enabled = false;   // переключать может только владелец
+        flashlight.enabled = false;
     }
 
     public override void OnNetworkDespawn()
     {
-        isOn.OnValueChanged -= OnToggled;
         if (flashlight != null) Destroy(flashlight.gameObject);
     }
 
     private void Update()
     {
-        if (PauseMenu.IsOpen) return;
-        if (TogglePressed())
-            isOn.Value = !isOn.Value;
-    }
+        if (flashlight == null) return;
 
-    private void OnToggled(bool oldValue, bool newValue) => ApplyState();
+        bool holding = inventory != null && inventory.HeldItemId == ItemId;
 
-    private void ApplyState()
-    {
-        if (flashlight != null) flashlight.enabled = isOn.Value;
+        if (IsOwner && !PauseMenu.IsOpen)
+        {
+            if (!holding && isOn.Value)
+                isOn.Value = false;                  // убрали фонарик из рук — он гаснет
+            else if (holding && TogglePressed())
+                isOn.Value = !isOn.Value;
+        }
+
+        // Свет есть только если фонарик в руке и включён (так видят все игроки)
+        flashlight.enabled = isOn.Value && holding;
     }
 
     private void BuildLight()

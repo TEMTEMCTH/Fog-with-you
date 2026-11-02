@@ -21,6 +21,8 @@ public class PlayerInventory : NetworkBehaviour
     [Header("Предметы")]
     [Tooltip("Префабы ВСЕХ предметов, которые можно взять (с PickupItem и NetworkObject).")]
     [SerializeField] private PickupItem[] itemPrefabs;
+    [Tooltip("Item Id предметов, из которых каждому игроку в начале игры случайно достаётся ОДИН (поровну).")]
+    [SerializeField] private string[] startingItemChoices = { "flashlight", "flaregun" };
 
     [Header("Взаимодействие")]
     [SerializeField] private float interactRange = 3f;
@@ -38,6 +40,10 @@ public class PlayerInventory : NetworkBehaviour
 
     private Camera cam;
     private InventoryUI ui;
+    private string heldIdCache = "";   // Item Id предмета в руке (обновляется у всех игроков)
+
+    /// <summary>Item Id предмета, который игрок держит в руке (пустая строка — рука пуста).</summary>
+    public string HeldItemId => heldIdCache;
     private PickupItem lookedAt;
     private GameObject heldRoot;
     private int selected;        // выбранный слот (на клиенте владельца)
@@ -59,13 +65,17 @@ public class PlayerInventory : NetworkBehaviour
     public override void OnNetworkSpawn()
     {
         if (IsServer && items.Count == 0)
+        {
             for (int i = 0; i < SlotCount; i++)
                 items.Add(default);
+            GiveStartingItem();
+        }
 
         cam = GetComponentInChildren<Camera>(true);
 
         heldItemId.OnValueChanged += OnHeldChanged;
-        RebuildHeldVisual(heldItemId.Value.ToString());
+        heldIdCache = heldItemId.Value.ToString();
+        RebuildHeldVisual(heldIdCache);
 
         if (!IsOwner)
         {
@@ -191,7 +201,14 @@ public class PlayerInventory : NetworkBehaviour
 
     private void OnHeldChanged(FixedString32Bytes oldValue, FixedString32Bytes newValue)
     {
-        RebuildHeldVisual(newValue.ToString());
+        heldIdCache = newValue.ToString();
+        RebuildHeldVisual(heldIdCache);
+    }
+
+    /// <summary>Показать игроку короткое сообщение внизу экрана.</summary>
+    public void ShowMessage(string text)
+    {
+        if (ui != null) ui.ShowMessage(text);
     }
 
     /// <summary>
@@ -304,6 +321,20 @@ public class PlayerInventory : NetworkBehaviour
         RefreshHeld();
     }
 
+    // В начале игры каждый игрок получает один случайный предмет (например, фонарик ИЛИ сигнальный пистолет)
+    private void GiveStartingItem()
+    {
+        if (startingItemChoices == null || startingItemChoices.Length == 0) return;
+
+        string choice = startingItemChoices[Random.Range(0, startingItemChoices.Length)];
+        if (FindPrefab(choice) == null)
+            Debug.LogWarning($"PlayerInventory: стартовый предмет «{choice}» не найден в списке Item Prefabs!", this);
+
+        items[0] = new FixedString32Bytes(choice);
+        serverSelected = 0;   // предмет сразу в руке
+        RefreshHeld();
+    }
+
     // Новый предмет кладём в выбранный слот, если он пуст, иначе — в первый свободный
     private int FindTargetSlot()
     {
@@ -333,7 +364,7 @@ public class PlayerInventory : NetworkBehaviour
     }
 #else
     private bool InteractPressed() => Input.GetKeyDown(KeyCode.E);
-    private bool DropPressed() => Input.GetKeyDown(KeyCode.Q);
+    private bool DropPressed()     => Input.GetKeyDown(KeyCode.Q);
 
     private int NumberPressed()
     {

@@ -87,7 +87,7 @@ public class InventoryUI : MonoBehaviour
             slotNames[i] = label;
         }
 
-        // Подсказка «[E] Поднять: ...» — по центру внизу, над шкалой выносливости
+        // Подсказка «[E] Поднять: ...» — по центру внизу
         promptText = CreateText("Prompt", transform, "", 36, TextAnchor.MiddleCenter, Color.white);
         SetupAnchored(promptText.rectTransform, new Vector2(0.5f, 0f), new Vector2(0f, 110f), new Vector2(1200f, 50f));
         promptText.gameObject.AddComponent<Shadow>();
@@ -99,7 +99,7 @@ public class InventoryUI : MonoBehaviour
 
         // Подсказка по управлению
         var hint = CreateText("Hint", transform,
-            "E — поднять   Q — выбросить   1–" + slotCount + " — взять в руку   F — фонарик   Ctrl — присесть",
+            "E — поднять   Q — выбросить   1–" + slotCount + " — взять в руку   F — фонарик   ЛКМ — сигнальный пистолет   Ctrl — присесть",
             24, TextAnchor.UpperLeft, new Color(0.8f, 0.85f, 0.9f, 0.8f));
         SetupAnchored(hint.rectTransform, new Vector2(0f, 1f), new Vector2(20f, -20f), new Vector2(1500f, 40f));
         hint.gameObject.AddComponent<Shadow>();
