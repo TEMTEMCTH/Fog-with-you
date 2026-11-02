@@ -82,7 +82,7 @@ public class MonsterVoice : NetworkBehaviour
             // Хозяин голоса не получает свою реплику, даже если подошёл ближе во время фразы
             var targets = ListenersInRange(clip.Owner);
             if (targets.Count > 0)
-                PlayVoiceRpc(frame, clip.Rate, RpcTarget.Group(targets, RpcTargetUse.Temp));
+                PlayVoiceRpc(frame, clip.Rate, clip.Loud, RpcTarget.Group(targets, RpcTargetUse.Temp));
 
             yield return wait;
         }
@@ -109,8 +109,8 @@ public class MonsterVoice : NetworkBehaviour
     }
 
     [Rpc(SendTo.SpecifiedInParams, Delivery = RpcDelivery.Unreliable)]
-    private void PlayVoiceRpc(byte[] data, int rate, RpcParams rpcParams = default)
+    private void PlayVoiceRpc(byte[] data, int rate, bool shout, RpcParams rpcParams = default)
     {
-        if (playback != null) playback.Feed(data, rate);
+        if (playback != null) playback.Feed(data, rate, voiceMaxDistance, shout);
     }
 }

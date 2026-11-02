@@ -43,6 +43,7 @@ public class PlayerController : NetworkBehaviour
     private Vector3 standCenter;
     private float standPivotY;
     private bool crouching;
+    private PlayerCapture capture;   // состояние плена (необязательно)
 
     // Присел ли игрок — видят все (пригодится, например, чтобы монстр хуже замечал присевших)
     private NetworkVariable<bool> isCrouching;
@@ -51,6 +52,7 @@ public class PlayerController : NetworkBehaviour
     private void Awake()
     {
         controller = GetComponent<CharacterController>();
+        capture = GetComponent<PlayerCapture>();
         standHeight = controller.height;
         standCenter = controller.center;
 
@@ -114,8 +116,10 @@ public class PlayerController : NetworkBehaviour
         if (!paused && Cursor.lockState == CursorLockMode.Locked)
             HandleLook();
 
-        HandleCrouch(paused);
-        HandleMovement(paused);
+        // Схваченный монстром или сидящий в клетке игрок не двигается (но может смотреть по сторонам)
+        bool locked = capture != null && capture.IsLocked;
+        HandleCrouch(paused || locked);
+        if (!locked) HandleMovement(paused);
     }
 
     private void HandleLook()
@@ -187,6 +191,13 @@ public class PlayerController : NetworkBehaviour
 
         Vector3 velocity = horizontalVelocity + Vector3.up * verticalVelocity;
         controller.Move(velocity * Time.deltaTime);
+    }
+
+    /// <summary>Сбросить накопленную скорость (после захвата монстром, освобождения и т.п.).</summary>
+    public void ResetMotion()
+    {
+        horizontalVelocity = Vector3.zero;
+        verticalVelocity = 0f;
     }
 
     private void SetCursorLock(bool locked)

@@ -36,6 +36,7 @@ public class PlayerAudio : NetworkBehaviour
     private AudioSource source;
     private CharacterController controller;
     private PlayerController motion;
+    private PlayerCapture capture;
 
     private Vector3 lastPos;
     private Vector3 smoothHorizontal;
@@ -52,6 +53,7 @@ public class PlayerAudio : NetworkBehaviour
     {
         controller = GetComponent<CharacterController>();
         motion = GetComponent<PlayerController>();
+        capture = GetComponent<PlayerCapture>();
 
         var go = new GameObject("FootstepAudio");
         go.transform.SetParent(transform, false);
@@ -78,6 +80,9 @@ public class PlayerAudio : NetworkBehaviour
 
         // Телепорт или рывок — пропускаем кадр
         if (velocity.magnitude > 40f) { silentUntil = Time.time + 1f; return; }
+
+        // Когда игрока несёт монстр или он в клетке — шагов нет
+        if (capture != null && capture.IsLocked) { wasGrounded = true; stepDistance = 0f; return; }
 
         float vy = velocity.y;
         var horizontal = new Vector3(velocity.x, 0f, velocity.z);

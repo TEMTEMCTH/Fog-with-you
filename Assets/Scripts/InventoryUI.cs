@@ -99,9 +99,10 @@ public class InventoryUI : MonoBehaviour
 
         // Подсказка по управлению
         var hint = CreateText("Hint", transform,
-            "E — поднять   Q — выбросить   1–" + slotCount + " — взять в руку   F — фонарик   ЛКМ — сигнальный пистолет   Ctrl — присесть",
+            "E — поднять   Q — выбросить   1–" + slotCount + " — взять в руку   F — фонарик   Ctrl — присесть\n"
+            + "ЛКМ — применить предмет (свисток, пистолет, удар, бросок)   ПКМ — бросить копьё   Удерживать E у клетки — освободить",
             24, TextAnchor.UpperLeft, new Color(0.8f, 0.85f, 0.9f, 0.8f));
-        SetupAnchored(hint.rectTransform, new Vector2(0f, 1f), new Vector2(20f, -20f), new Vector2(1500f, 40f));
+        SetupAnchored(hint.rectTransform, new Vector2(0f, 1f), new Vector2(20f, -20f), new Vector2(1700f, 80f));
         hint.gameObject.AddComponent<Shadow>();
     }
 

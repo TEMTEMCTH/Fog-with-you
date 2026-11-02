@@ -12,12 +12,12 @@ public static class ProceduralSounds
     private static AudioClip[] steps, caws, screams;
     private static AudioClip jump, land, crouch;
 
-    public static AudioClip[] Steps  => steps ??= BuildSteps();
-    public static AudioClip[] Caws   => caws ??= BuildCaws();
+    public static AudioClip[] Steps => steps ??= BuildSteps();
+    public static AudioClip[] Caws => caws ??= BuildCaws();
     public static AudioClip[] Screams => screams ??= BuildScreams();
-    public static AudioClip Jump     => jump ??= MakeJump();
-    public static AudioClip Land     => land ??= MakeLand();
-    public static AudioClip Crouch   => crouch ??= MakeCrouch();
+    public static AudioClip Jump => jump ??= MakeJump();
+    public static AudioClip Land => land ??= MakeLand();
+    public static AudioClip Crouch => crouch ??= MakeCrouch();
 
     // ───────────── Шаги, прыжок, приземление, приседание ─────────────
 
@@ -112,6 +112,42 @@ public static class ProceduralSounds
         }
         Normalize(d, 0.6f);
         return Make("Crouch", d);
+    }
+
+    // ───────────── Свисток ─────────────
+
+    private static AudioClip whistle;
+    public static AudioClip Whistle => whistle ??= MakeWhistle();
+
+    private static AudioClip MakeWhistle()
+    {
+        var rng = new System.Random(5);
+        float dur = 1.2f;
+        int n = (int)(Rate * dur);
+        var d = new float[n];
+        float phase = 0f, noiseLp = 0f;
+        for (int i = 0; i < n; i++)
+        {
+            float t = i / (float)Rate;
+            float u = t / dur;
+
+            // Высокий чистый тон с лёгкой вибрацией
+            float f = 2750f + 90f * Mathf.Sin(2f * Mathf.PI * 5f * t) + 120f * Mathf.Sin(Mathf.PI * u);
+            phase += 2f * Mathf.PI * f / Rate;
+            if (phase > 2f * Mathf.PI) phase -= 2f * Mathf.PI;
+
+            float tone = Mathf.Sin(phase) + 0.25f * Mathf.Sin(2f * phase);
+            float warble = 0.8f + 0.2f * Mathf.Sin(2f * Mathf.PI * 38f * t);   // «горошина» в свистке
+
+            float white = (float)(rng.NextDouble() * 2.0 - 1.0);
+            noiseLp += (white - noiseLp) * 0.5f;
+            float breath = (white - noiseLp) * 0.12f;                          // шипение воздуха
+
+            float env = Mathf.Clamp01(t / 0.04f) * Mathf.Clamp01((dur - t) / 0.12f);
+            d[i] = (tone * warble * 0.5f + breath) * env;
+        }
+        Normalize(d, 0.85f);
+        return Make("Whistle", d);
     }
 
     // ───────────── Вороны ─────────────

@@ -22,7 +22,7 @@ public class PlayerInventory : NetworkBehaviour
     [Tooltip("Префабы ВСЕХ предметов, которые можно взять (с PickupItem и NetworkObject).")]
     [SerializeField] private PickupItem[] itemPrefabs;
     [Tooltip("Item Id предметов, из которых каждому игроку в начале игры случайно достаётся ОДИН (поровну).")]
-    [SerializeField] private string[] startingItemChoices = { "flashlight", "flaregun" };
+    [SerializeField] private string[] startingItemChoices = { "flashlight", "flaregun", "whistle", "tablet" };
 
     [Header("Взаимодействие")]
     [SerializeField] private float interactRange = 3f;
@@ -40,10 +40,18 @@ public class PlayerInventory : NetworkBehaviour
 
     private Camera cam;
     private InventoryUI ui;
+    private PlayerCapture capture;   // состояние плена (необязательно)
     private string heldIdCache = "";   // Item Id предмета в руке (обновляется у всех игроков)
 
     /// <summary>Item Id предмета, который игрок держит в руке (пустая строка — рука пуста).</summary>
     public string HeldItemId => heldIdCache;
+
+    /// <summary>Префаб предмета в руке (null — рука пуста).</summary>
+    public PickupItem HeldItemPrefab => string.IsNullOrEmpty(heldIdCache) ? null : FindPrefab(heldIdCache);
+
+    /// <summary>Ввод игрока заблокирован: пауза, курсор свободен, игрок схвачен монстром или сидит в плену.</summary>
+    public bool InputBlocked =>
+        PauseMenu.IsOpen || Cursor.lockState != CursorLockMode.Locked || (capture != null && capture.IsLocked);
     private PickupItem lookedAt;
     private GameObject heldRoot;
     private int selected;        // выбранный слот (на клиенте владельца)
@@ -72,6 +80,7 @@ public class PlayerInventory : NetworkBehaviour
         }
 
         cam = GetComponentInChildren<Camera>(true);
+        capture = GetComponent<PlayerCapture>();
 
         heldItemId.OnValueChanged += OnHeldChanged;
         heldIdCache = heldItemId.Value.ToString();
@@ -99,7 +108,7 @@ public class PlayerInventory : NetworkBehaviour
     {
         if (ui == null) return;
 
-        bool blocked = PauseMenu.IsOpen || Cursor.lockState != CursorLockMode.Locked;
+        bool blocked = InputBlocked;
 
         lookedAt = blocked ? null : FindLookedItem();
 
@@ -206,9 +215,9 @@ public class PlayerInventory : NetworkBehaviour
     }
 
     /// <summary>Показать игроку короткое сообщение внизу экрана.</summary>
-    public void ShowMessage(string text)
+    public void ShowMessage(string text, float seconds = 2f)
     {
-        if (ui != null) ui.ShowMessage(text);
+        if (ui != null) ui.ShowMessage(text, seconds);
     }
 
     /// <summary>
@@ -321,6 +330,66 @@ public class PlayerInventory : NetworkBehaviour
         RefreshHeld();
     }
 
+    // ───────────── Для других скриптов (только на сервере) ─────────────
+
+    /// <summary>Забрать предмет из руки (например, при броске). Возвращает его Item Id.</summary>
+    public bool ServerConsumeHeld(out string itemId)
+    {
+        itemId = null;
+        if (!IsServer) return false;
+        if (serverSelected >= items.Count || items[serverSelected].IsEmpty) return false;
+
+        itemId = items[serverSelected].ToString();
+        items[serverSelected] = default;
+        RefreshHeld();
+        return true;
+    }
+
+    /// <summary>Положить предмет на землю в точке point (или под ней).</summary>
+    public void ServerSpawnItemAt(string itemId, Vector3 point)
+    {
+        if (!IsServer) return;
+
+        var prefab = FindPrefab(itemId);
+        if (prefab == null)
+        {
+            Debug.LogError($"PlayerInventory: префаб предмета «{itemId}» не добавлен в список Item Prefabs!", this);
+            return;
+        }
+
+        // Ищем землю под точкой, пропуская монстра и игроков
+        Vector3 spawnPos = point;
+        bool hitGround = false;
+        var hits = Physics.RaycastAll(point + Vector3.up * 1.5f, Vector3.down, 10f, ~0, QueryTriggerInteraction.Ignore);
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        foreach (var h in hits)
+        {
+            if (h.collider.GetComponentInParent<MonsterAI>() != null) continue;
+            if (h.collider.GetComponentInParent<PlayerCapture>() != null) continue;
+            spawnPos = h.point;
+            hitGround = true;
+            break;
+        }
+
+        var instance = Instantiate(prefab, spawnPos, Quaternion.identity);
+
+        var col = instance.GetComponentInChildren<Collider>();
+        if (hitGround && col != null)
+        {
+            Physics.SyncTransforms();
+            instance.transform.position += Vector3.up * (spawnPos.y - col.bounds.min.y);
+        }
+
+        var netObj = instance.GetComponent<NetworkObject>();
+        if (netObj == null)
+        {
+            Debug.LogError($"У префаба «{itemId}» нет компонента NetworkObject!", prefab);
+            Destroy(instance.gameObject);
+            return;
+        }
+        netObj.Spawn();
+    }
+
     // В начале игры каждый игрок получает один случайный предмет (например, фонарик ИЛИ сигнальный пистолет)
     private void GiveStartingItem()
     {
@@ -364,7 +433,7 @@ public class PlayerInventory : NetworkBehaviour
     }
 #else
     private bool InteractPressed() => Input.GetKeyDown(KeyCode.E);
-    private bool DropPressed()     => Input.GetKeyDown(KeyCode.Q);
+    private bool DropPressed() => Input.GetKeyDown(KeyCode.Q);
 
     private int NumberPressed()
     {

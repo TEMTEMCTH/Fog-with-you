@@ -39,7 +39,7 @@ public class PlayerFlareGun : NetworkBehaviour
     private void Update()
     {
         if (inventory == null || cam == null) return;
-        if (PauseMenu.IsOpen || Cursor.lockState != CursorLockMode.Locked) return;
+        if (inventory.InputBlocked) return;
         if (inventory.HeldItemId != ItemId) return;
         if (!FirePressed()) return;
 

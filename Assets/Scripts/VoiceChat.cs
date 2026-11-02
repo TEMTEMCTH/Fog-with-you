@@ -8,9 +8,10 @@ using UnityEngine.InputSystem;
 
 /// <summary>
 /// Голосовой чат по близости: вы слышите игроков, пока они находятся в радиусе слышимости,
-/// и чем они дальше, тем тише. Голос идёт через хоста по вашей же сетевой игре (без сторонних сервисов).
+/// и чем они дальше, тем тише. Обычную речь слышно на 30 метров, а громкий КРИК — на 60 метров и с эхом.
+/// Голос идёт через хоста по вашей же сетевой игре (без сторонних сервисов).
 /// Качество «как по рации»: 16 кГц, 8 бит.
-/// Хост получает голоса всех игроков, чтобы монстры могли их повторять.
+/// Хост получает голоса всех игроков, чтобы монстры могли повторять сказанное.
 /// Вешается на префаб игрока.
 /// </summary>
 public class VoiceChat : NetworkBehaviour
@@ -18,13 +19,17 @@ public class VoiceChat : NetworkBehaviour
     [Header("Дальность голоса (метры)")]
     [Tooltip("В этом радиусе голос слышно на полной громкости.")]
     [SerializeField] private float voiceMinDistance = 3f;
-    [Tooltip("За этим радиусом голос не слышно совсем. Между min и max громкость плавно падает.")]
+    [Tooltip("Обычная речь: за этим радиусом не слышно совсем. Между min и max громкость плавно падает.")]
     [SerializeField] private float voiceMaxDistance = 30f;
+    [Tooltip("Громкий крик: слышно на таком расстоянии и с эхом.")]
+    [SerializeField] private float shoutMaxDistance = 60f;
 
     [Header("Микрофон")]
     [SerializeField] private bool pushToTalk = false;       // false = голос включается сам, когда вы говорите
     [Tooltip("Чем меньше — тем чувствительнее микрофон (ловит и тихий голос, и шумы).")]
     [SerializeField] private float voiceThreshold = 0.015f;
+    [Tooltip("Громкость, с которой речь считается криком. Если крик не срабатывает — уменьшите, если срабатывает от обычной речи — увеличьте.")]
+    [SerializeField] private float shoutThreshold = 0.12f;
     [SerializeField] private float hangoverSeconds = 0.4f;  // сколько ещё передавать после окончания фразы
     [SerializeField] private float micGain = 1f;
 
@@ -42,7 +47,9 @@ public class VoiceChat : NetworkBehaviour
     private readonly List<float> pending = new List<float>();
     private float[] previousFrame;
     private float lastLoudTime = -100f;
+    private float lastShoutTime = -100f;
     private bool gateOpen;
+    private bool shouting;
     private bool micAvailable;
 
     // Индикатор
@@ -95,9 +102,7 @@ public class VoiceChat : NetworkBehaviour
 
     private void Update()
     {
-        if (!micAvailable) { UpdateIndicator(); return; }
-
-        ReadMic();
+        if (micAvailable) ReadMic();
         UpdateIndicator();
     }
 
@@ -153,30 +158,28 @@ public class VoiceChat : NetworkBehaviour
 
     private void ProcessFrame(float[] frame)
     {
-        bool open;
-        if (pushToTalk)
-        {
-            open = PushToTalkHeld();
-        }
-        else
-        {
-            float sum = 0f;
-            for (int i = 0; i < frame.Length; i++) sum += frame[i] * frame[i];
-            float rms = Mathf.Sqrt(sum / frame.Length);
-            if (rms > voiceThreshold) lastLoudTime = Time.time;
-            open = Time.time - lastLoudTime < hangoverSeconds;
-        }
+        float sum = 0f;
+        for (int i = 0; i < frame.Length; i++) sum += frame[i] * frame[i];
+        float rms = Mathf.Sqrt(sum / frame.Length);
+
+        if (rms > voiceThreshold) lastLoudTime = Time.time;
+        if (rms > shoutThreshold) lastShoutTime = Time.time;
+
+        bool open = pushToTalk ? PushToTalkHeld() : (Time.time - lastLoudTime < hangoverSeconds);
+        // Крик «держится» чуть дольше самого громкого момента, чтобы целое слово считалось криком
+        bool shout = open && (Time.time - lastShoutTime < 0.35f);
 
         if (open)
         {
             // Первый кадр фразы: добавляем предыдущий, чтобы не «съедать» начало слова
             if (!gateOpen && previousFrame != null)
-                SendVoiceRpc(VoiceCodec.Encode(previousFrame), effectiveRate);
+                SendVoiceRpc(VoiceCodec.Encode(previousFrame), effectiveRate, false);
 
-            SendVoiceRpc(VoiceCodec.Encode(frame), effectiveRate);
+            SendVoiceRpc(VoiceCodec.Encode(frame), effectiveRate, shout);
         }
 
         gateOpen = open;
+        shouting = shout;
         previousFrame = frame;
     }
 
@@ -184,18 +187,18 @@ public class VoiceChat : NetworkBehaviour
 
     // Игрок -> сервер (хост). Потеря отдельных кадров не страшна, поэтому без гарантии доставки.
     [Rpc(SendTo.Server, Delivery = RpcDelivery.Unreliable)]
-    private void SendVoiceRpc(byte[] data, int rate)
+    private void SendVoiceRpc(byte[] data, int rate, bool shout)
     {
         ulong speaker = OwnerClientId;
 
         // Запоминаем речь: из неё монстры потом берут реплики для повтора
-        VoiceBank.Feed(speaker, data, rate);
+        VoiceBank.Feed(speaker, data, rate, shout);
 
-        // Отправляем только тем, кто достаточно близко
+        // Отправляем только тем, кто достаточно близко (крик — дальше)
         var nm = NetworkManager.Singleton;
         var targets = new List<ulong>();
-        float maxSqr = voiceMaxDistance * 1.1f;
-        maxSqr *= maxSqr;
+        float range = (shout ? shoutMaxDistance : voiceMaxDistance) * 1.1f;
+        float maxSqr = range * range;
 
         foreach (var kv in nm.ConnectedClients)
         {
@@ -207,14 +210,15 @@ public class VoiceChat : NetworkBehaviour
         }
 
         if (targets.Count > 0)
-            PlayVoiceRpc(data, rate, RpcTarget.Group(targets, RpcTargetUse.Temp));
+            PlayVoiceRpc(data, rate, shout, RpcTarget.Group(targets, RpcTargetUse.Temp));
     }
 
     // Сервер -> слушатели
     [Rpc(SendTo.SpecifiedInParams, Delivery = RpcDelivery.Unreliable)]
-    private void PlayVoiceRpc(byte[] data, int rate, RpcParams rpcParams = default)
+    private void PlayVoiceRpc(byte[] data, int rate, bool shout, RpcParams rpcParams = default)
     {
-        if (playback != null) playback.Feed(data, rate);
+        if (playback != null)
+            playback.Feed(data, rate, shout ? shoutMaxDistance : voiceMaxDistance, shout);
     }
 
     // ───────────── Индикатор ─────────────
@@ -255,6 +259,11 @@ public class VoiceChat : NetworkBehaviour
         {
             indicator.text = "Микрофон не найден";
             indicator.color = new Color(0.9f, 0.5f, 0.4f);
+        }
+        else if (shouting)
+        {
+            indicator.text = "● Вы кричите (слышно на " + Mathf.RoundToInt(shoutMaxDistance) + " м)";
+            indicator.color = new Color(1f, 0.6f, 0.2f);
         }
         else if (gateOpen)
         {

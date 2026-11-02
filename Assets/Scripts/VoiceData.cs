@@ -57,6 +57,7 @@ public static class VoiceBank
         public byte[] Data;
         public int Rate;
         public ulong Owner;
+        public bool Loud;   // реплика была криком (слышна дальше и с эхом)
     }
 
     private class Builder
@@ -64,6 +65,7 @@ public static class VoiceBank
         public readonly List<byte> Bytes = new List<byte>();
         public int Rate;
         public float LastTime;
+        public bool Loud;
     }
 
     private static readonly Dictionary<ulong, List<Clip>> overheard = new Dictionary<ulong, List<Clip>>();
@@ -81,7 +83,7 @@ public static class VoiceBank
     }
 
     /// <summary>Сюда сервер отдаёт каждый кадр живой речи игрока — из них собираются реплики.</summary>
-    public static void Feed(ulong speaker, byte[] frame, int rate)
+    public static void Feed(ulong speaker, byte[] frame, int rate, bool loud = false)
     {
         FlushStale();
 
@@ -93,6 +95,7 @@ public static class VoiceBank
 
         b.Rate = rate;
         b.Bytes.AddRange(frame);
+        if (loud) b.Loud = true;
         b.LastTime = Time.unscaledTime;
 
         if (b.Bytes.Count > MaxSeconds * rate)
@@ -132,9 +135,10 @@ public static class VoiceBank
                 list = new List<Clip>();
                 overheard[speaker] = list;
             }
-            list.Add(new Clip { Data = b.Bytes.ToArray(), Rate = b.Rate, Owner = speaker });
+            list.Add(new Clip { Data = b.Bytes.ToArray(), Rate = b.Rate, Owner = speaker, Loud = b.Loud });
             while (list.Count > MaxPerPlayer) list.RemoveAt(0);
         }
         b.Bytes.Clear();
+        b.Loud = false;
     }
 }

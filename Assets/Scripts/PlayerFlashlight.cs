@@ -53,7 +53,7 @@ public class PlayerFlashlight : NetworkBehaviour
 
         bool holding = inventory != null && inventory.HeldItemId == ItemId;
 
-        if (IsOwner && !PauseMenu.IsOpen)
+        if (IsOwner && inventory != null && !inventory.InputBlocked)
         {
             if (!holding && isOn.Value)
                 isOn.Value = false;                  // убрали фонарик из рук — он гаснет
