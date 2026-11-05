@@ -10,7 +10,7 @@ using UnityEngine.InputSystem;
 ///   ЛКМ — ударить (палка, копьё) или бросить (камень);
 ///   ПКМ — бросить копьё.
 /// Попадание оглушает монстра. Брошенный предмет падает на землю, и его можно поднять снова.
-/// Вешается на префаб игрока. Тип оружия задаётся у PickupItem предмета.
+/// Вешается на префаб игрока. Тип оружия задаётся у PickupItem предмета (поле Weapon).
 /// </summary>
 public class PlayerCombat : NetworkBehaviour
 {
@@ -24,6 +24,10 @@ public class PlayerCombat : NetworkBehaviour
     [SerializeField] private float throwUpward = 2f;
     [SerializeField] private float maxFlightSeconds = 4f;
     [SerializeField] private float hitRadius = 0.3f;
+
+    [Header("Отладка")]
+    [Tooltip("Писать в Console, что произошло по клику мыши (и почему удар или бросок не сработал).")]
+    [SerializeField] private bool debugLog = true;
 
     private PlayerInventory inventory;
     private Camera cam;
@@ -39,13 +43,32 @@ public class PlayerCombat : NetworkBehaviour
 
     private void Update()
     {
-        if (inventory == null || cam == null || inventory.InputBlocked) return;
-
-        PickupItem item = inventory.HeldItemPrefab;
-        if (item == null || (!item.CanMelee && !item.CanThrow)) return;
+        if (inventory == null || cam == null) return;
 
         bool left = LeftPressed();
         bool right = RightPressed();
+
+        if (inventory.InputBlocked)
+        {
+            if (debugLog && (left || right))
+                Debug.Log("[Бой] Клик не сработал: ввод заблокирован (пауза, свободный курсор или игрок схвачен).");
+            return;
+        }
+
+        PickupItem item = inventory.HeldItemPrefab;
+
+        if (debugLog && (left || right))
+        {
+            if (string.IsNullOrEmpty(inventory.HeldItemId))
+                Debug.Log("[Бой] Клик: рука пуста.");
+            else if (item == null)
+                Debug.LogWarning($"[Бой] В руке «{inventory.HeldItemId}», но его префаба нет в Item Prefabs у Player Inventory!");
+            else if (!item.CanMelee && !item.CanThrow)
+                Debug.Log($"[Бой] В руке «{item.ItemId}» — это не оружие (у Pickup Item поле Weapon = None).");
+        }
+
+        if (item == null || (!item.CanMelee && !item.CanThrow)) return;
+
         Transform t = cam.transform;
 
         if (item.CanMelee && left)
@@ -66,7 +89,11 @@ public class PlayerCombat : NetworkBehaviour
     private void MeleeRpc(Vector3 origin, Vector3 direction)
     {
         PickupItem item = inventory.HeldItemPrefab;
-        if (item == null || !item.CanMelee) return;
+        if (item == null || !item.CanMelee)
+        {
+            if (debugLog) Debug.LogWarning("[Бой] Сервер отклонил удар: в руке нет оружия ближнего боя.");
+            return;
+        }
         if (Time.time < serverNextMeleeTime) return;
         if (direction.sqrMagnitude < 0.01f) return;
         serverNextMeleeTime = Time.time + meleeCooldown * 0.8f;
@@ -75,7 +102,19 @@ public class PlayerCombat : NetworkBehaviour
                 ~0, QueryTriggerInteraction.Ignore))
         {
             var monster = hit.collider.GetComponentInParent<MonsterAI>();
-            if (monster != null) monster.ServerHit();
+            if (monster != null)
+            {
+                if (debugLog) Debug.Log("[Бой] Удар попал в монстра.");
+                monster.ServerHit();
+            }
+            else if (debugLog)
+            {
+                Debug.Log($"[Бой] Удар попал в «{hit.collider.name}», это не монстр.");
+            }
+        }
+        else if (debugLog)
+        {
+            Debug.Log("[Бой] Удар мимо: впереди на расстоянии удара ничего нет.");
         }
     }
 
@@ -85,9 +124,17 @@ public class PlayerCombat : NetworkBehaviour
     private void ThrowRpc(Vector3 origin, Vector3 direction)
     {
         PickupItem item = inventory.HeldItemPrefab;
-        if (item == null || !item.CanThrow) return;
+        if (item == null || !item.CanThrow)
+        {
+            if (debugLog) Debug.LogWarning("[Бой] Сервер отклонил бросок: в руке нет метательного предмета.");
+            return;
+        }
         if (direction.sqrMagnitude < 0.01f) return;
-        if (!inventory.ServerConsumeHeld(out string itemId)) return;
+        if (!inventory.ServerConsumeHeld(out string itemId))
+        {
+            if (debugLog) Debug.LogWarning("[Бой] Сервер отклонил бросок: слот в руке пуст (выбранный слот на сервере не совпал).");
+            return;
+        }
 
         Vector3 velocity = direction.normalized * throwSpeed + Vector3.up * throwUpward;
         ThrowVisualRpc(origin, velocity);
@@ -116,7 +163,15 @@ public class PlayerCombat : NetworkBehaviour
                     ~0, QueryTriggerInteraction.Ignore))
             {
                 var monster = hit.collider.GetComponentInParent<MonsterAI>();
-                if (monster != null) monster.ServerHit();
+                if (monster != null)
+                {
+                    if (debugLog) Debug.Log($"[Бой] Бросок «{itemId}» попал в монстра.");
+                    monster.ServerHit();
+                }
+                else if (debugLog)
+                {
+                    Debug.Log($"[Бой] Бросок «{itemId}» попал в «{hit.collider.name}», это не монстр.");
+                }
 
                 inventory.ServerSpawnItemAt(itemId, hit.point);
                 yield break;
@@ -133,7 +188,7 @@ public class PlayerCombat : NetworkBehaviour
     private bool LeftPressed()  => Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
     private bool RightPressed() => Mouse.current != null && Mouse.current.rightButton.wasPressedThisFrame;
 #else
-    private bool LeftPressed()  => Input.GetMouseButtonDown(0);
+    private bool LeftPressed() => Input.GetMouseButtonDown(0);
     private bool RightPressed() => Input.GetMouseButtonDown(1);
 #endif
 }

@@ -52,6 +52,11 @@ public class VoiceChat : NetworkBehaviour
     private bool shouting;
     private bool micAvailable;
 
+    // Эффект зелья: изменение высоты голоса
+    private PitchShifter shifter;
+    private float pitchRatio = 1f;
+    private float effectEndTime;
+
     // Индикатор
     private GameObject uiRoot;
     private Text indicator;
@@ -141,7 +146,13 @@ public class VoiceChat : NetworkBehaviour
             accumulatedCount++;
             if (accumulatedCount == decimateFactor)
             {
-                pending.Add(Mathf.Clamp(accumulator / decimateFactor * micGain, -1f, 1f));
+                float sample = Mathf.Clamp(accumulator / decimateFactor * micGain, -1f, 1f);
+                if (EffectActive && shifter != null)
+                {
+                    shifter.Ratio = pitchRatio;
+                    sample = Mathf.Clamp(shifter.Process(sample), -1f, 1f);
+                }
+                pending.Add(sample);
                 accumulator = 0f;
                 accumulatedCount = 0;
             }
@@ -181,6 +192,24 @@ public class VoiceChat : NetworkBehaviour
         gateOpen = open;
         shouting = shout;
         previousFrame = frame;
+    }
+
+    // ───────────── Эффект зелья ─────────────
+
+    /// <summary>Идёт ли сейчас эффект изменения голоса.</summary>
+    public bool EffectActive => Time.time < effectEndTime;
+
+    /// <summary>Сколько секунд эффект ещё продлится.</summary>
+    public float EffectRemaining => Mathf.Max(0f, effectEndTime - Time.time);
+
+    /// <summary>Сделать голос выше (ratio &gt; 1) на seconds секунд. Голос меняется до отправки по сети, поэтому его слышат все.</summary>
+    public void StartPitchEffect(float ratio, float seconds)
+    {
+        pitchRatio = ratio;
+        effectEndTime = Time.time + seconds;
+
+        if (shifter == null) shifter = new PitchShifter(effectiveRate);
+        shifter.Reset();
     }
 
     // ───────────── Сеть ─────────────
@@ -275,6 +304,9 @@ public class VoiceChat : NetworkBehaviour
             indicator.text = pushToTalk ? "Микрофон: удерживайте V" : "Микрофон включён";
             indicator.color = new Color(0.75f, 0.8f, 0.85f, 0.7f);
         }
+
+        if (EffectActive)
+            indicator.text += $"   (высокий голос: ещё {Mathf.CeilToInt(EffectRemaining)} с)";
     }
 
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER

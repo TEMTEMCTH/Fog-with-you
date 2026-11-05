@@ -163,6 +163,14 @@ public class PlayerInventory : NetworkBehaviour
             return;
         }
 
+        string heldId = items[selected].ToString();
+        if (FindPrefab(heldId) == null)
+        {
+            ui.ShowMessage($"Нельзя выбросить «{heldId}»: его префаба нет в Item Prefabs у игрока", 4f);
+            Debug.LogWarning($"PlayerInventory: предмет «{heldId}» нельзя выбросить — добавьте его префаб в Item Prefabs у компонента Player Inventory на префабе игрока.", this);
+            return;
+        }
+
         DropServerRpc(selected);
     }
 
@@ -325,7 +333,17 @@ public class PlayerInventory : NetworkBehaviour
             return;
         }
 
-        netObj.Spawn();
+        try
+        {
+            netObj.Spawn();
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Не удалось выбросить «{itemId}». Скорее всего, его префаба нет в Network Prefabs List. {e.Message}", this);
+            Destroy(instance.gameObject);
+            return;
+        }
+
         items[index] = default;
         RefreshHeld();
     }
@@ -387,7 +405,15 @@ public class PlayerInventory : NetworkBehaviour
             Destroy(instance.gameObject);
             return;
         }
-        netObj.Spawn();
+        try
+        {
+            netObj.Spawn();
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Не удалось создать предмет «{itemId}» на земле. Скорее всего, его префаба нет в Network Prefabs List. {e.Message}", this);
+            Destroy(instance.gameObject);
+        }
     }
 
     // В начале игры каждый игрок получает один случайный предмет (например, фонарик ИЛИ сигнальный пистолет)

@@ -13,11 +13,14 @@ public class CaptureSpot : NetworkBehaviour
 
     [SerializeField] private Transform prisonPoint;
     [SerializeField] private Transform exitPoint;
+    [Tooltip("Монстр считается дошедшим, когда он ближе этого расстояния (метры) к центру клетки. Для большой клетки увеличьте.")]
+    [SerializeField] private float arriveRadius = 3.5f;
 
     private NetworkVariable<bool> occupied;
     private PlayerCapture prisoner;   // только на сервере
 
     public bool Occupied => occupied.Value;
+    public float ArriveRadius => arriveRadius;
 
     public Vector3 PrisonPosition =>
         prisonPoint != null ? prisonPoint.position : transform.position + Vector3.up * 1.0f;

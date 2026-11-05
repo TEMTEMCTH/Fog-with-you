@@ -35,6 +35,10 @@ public class MonsterAI : NetworkBehaviour
     [SerializeField] private float inspectSeconds = 3f;
     [Tooltip("Где висит схваченный игрок относительно монстра.")]
     [SerializeField] private Vector3 holdOffset = new Vector3(0f, 2.3f, 0.9f);
+    [Tooltip("Если монстр несёт пленника дольше этого времени, пленника сажают в клетку принудительно.")]
+    [SerializeField] private float carryTimeoutSeconds = 40f;
+    [Tooltip("Если монстр с пленником стоит на месте (застрял) столько секунд, пленника сажают в клетку принудительно.")]
+    [SerializeField] private float stuckSecondsLimit = 3f;
 
     [Header("Оглушение")]
     [SerializeField] private float stunSeconds = 5f;
@@ -44,6 +48,11 @@ public class MonsterAI : NetworkBehaviour
     [Header("Блуждание")]
     [SerializeField] private float wanderRadius = 25f;
     [SerializeField] private float gravity = -20f;
+
+    [Header("Отладка")]
+    [Tooltip("Писать в Console, что монстр видит и почему не бросается в погоню. Выключите, когда всё заработает.")]
+    [SerializeField] private bool debugLog = true;
+    private float nextDebugTime;
 
     private NetworkVariable<int> stateVar;
     private CharacterController controller;
@@ -65,6 +74,13 @@ public class MonsterAI : NetworkBehaviour
 
     private PlayerCapture victim;
     private CaptureSpot spot;
+
+    // Контроль доставки пленника
+    private float carryTimer;
+    private float nextCarryLogTime;
+    private Vector3 lastCheckPosition;
+    private float nextCheckTime;
+    private float stuckSeconds;
 
     public State CurrentState => state;
 
@@ -108,11 +124,11 @@ public class MonsterAI : NetworkBehaviour
         Color color;
         switch ((State)stateVar.Value)
         {
-            case State.Chase:    color = new Color(0.85f, 0.1f, 0.1f); break;
+            case State.Chase: color = new Color(0.85f, 0.1f, 0.1f); break;
             case State.Grabbing:
             case State.Carrying: color = new Color(0.95f, 0.45f, 0.1f); break;
-            case State.Stunned:  color = new Color(0.95f, 0.9f, 0.2f); break;
-            default:             color = new Color(0.35f, 0.1f, 0.1f); break;
+            case State.Stunned: color = new Color(0.95f, 0.9f, 0.2f); break;
+            default: color = new Color(0.35f, 0.1f, 0.1f); break;
         }
         bodyRenderer.material.color = color;
     }
@@ -124,18 +140,59 @@ public class MonsterAI : NetworkBehaviour
         float dt = Time.deltaTime;
         switch (state)
         {
-            case State.Wander:   UpdateWander(dt); break;
-            case State.Chase:    UpdateChase(dt); break;
+            case State.Wander: UpdateWander(dt); break;
+            case State.Chase: UpdateChase(dt); break;
             case State.Grabbing: UpdateGrabbing(dt); break;
             case State.Carrying: UpdateCarrying(dt); break;
-            case State.Stunned:  UpdateStunned(dt); break;
+            case State.Stunned: UpdateStunned(dt); break;
         }
+    }
+
+    // ───────────── Отладка ─────────────
+
+    // Каждые 2 секунды (пока монстр бродит) пишет, на каком расстоянии игроки и почему монстр их не видит
+    private void DebugDetection()
+    {
+        if (!debugLog || Time.time < nextDebugTime) return;
+        nextDebugTime = Time.time + 2f;
+
+        var clients = NetworkManager.Singleton.ConnectedClients;
+        if (clients.Count == 0) { Debug.Log("[Монстр] Нет подключённых игроков."); return; }
+
+        foreach (var kv in clients)
+        {
+            var playerObject = kv.Value.PlayerObject;
+            if (playerObject == null)
+            {
+                Debug.Log($"[Монстр] У клиента {kv.Key} нет игрового объекта.");
+                continue;
+            }
+
+            var capture = playerObject.GetComponent<PlayerCapture>();
+            float distance = FlatDistance(transform.position, playerObject.transform.position);
+            string note = capture == null ? "НА ПРЕФАБЕ ИГРОКА НЕТ КОМПОНЕНТА Player Capture!"
+                        : capture.IsLocked ? "игрок схвачен или в плену"
+                        : "ок";
+            Debug.Log($"[Монстр] Игрок {kv.Key}: {distance:0.0} м от монстра " +
+                      $"(замечает с {detectRadius:0} м, присевшего — с {detectRadius * crouchDetectFactor:0} м) — {note}");
+        }
+    }
+
+    // Если выделить монстра в сцене, видны жёлтый круг обнаружения и оранжевый круг потери игрока
+    private void OnDrawGizmosSelected()
+    {
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, detectRadius);
+        Gizmos.color = new Color(1f, 0.5f, 0f);
+        Gizmos.DrawWireSphere(transform.position, loseRadius);
     }
 
     // ───────────── Состояния ─────────────
 
     private void UpdateWander(float dt)
     {
+        DebugDetection();
+
         PlayerCapture found = FindTarget();
         if (found != null)
         {
@@ -230,8 +287,25 @@ public class MonsterAI : NetworkBehaviour
             }
         }
 
-        if (FlatDistance(transform.position, spot.transform.position) <= 1.8f)
+        carryTimer += dt;
+        float distance = FlatDistance(transform.position, spot.transform.position);
+        bool arrived = distance <= Mathf.Max(1.8f, spot.ArriveRadius);
+        bool timedOut = carryTimer > carryTimeoutSeconds;
+        bool stuck = IsStuck();
+
+        if (debugLog && Time.time >= nextCarryLogTime)
         {
+            nextCarryLogTime = Time.time + 2f;
+            Debug.Log($"[Монстр] Несёт пленника к «{spot.name}»: осталось {distance:0.0} м, идёт {carryTimer:0} с");
+        }
+
+        if (arrived || timedOut || stuck)
+        {
+            if (debugLog && !arrived)
+                Debug.LogWarning(timedOut
+                    ? "[Монстр] Слишком долго несёт пленника — сажаю его в клетку принудительно."
+                    : "[Монстр] Застрял по дороге к клетке — сажаю пленника принудительно.");
+
             spot.ServerImprison(victim);
             victim = null;
             spot = null;
@@ -241,6 +315,19 @@ public class MonsterAI : NetworkBehaviour
         }
 
         MoveToward(spot.transform.position, carrySpeed, dt);
+    }
+
+    // Монстр почти не двигается уже несколько секунд — значит, он застрял
+    private bool IsStuck()
+    {
+        if (Time.time < nextCheckTime) return stuckSeconds >= stuckSecondsLimit;
+
+        nextCheckTime = Time.time + 1f;
+        if (FlatDistance(transform.position, lastCheckPosition) < 0.25f) stuckSeconds += 1f;
+        else stuckSeconds = 0f;
+        lastCheckPosition = transform.position;
+
+        return stuckSeconds >= stuckSecondsLimit;
     }
 
     private void UpdateStunned(float dt)
@@ -296,7 +383,16 @@ public class MonsterAI : NetworkBehaviour
     {
         state = newState;
         stateVar.Value = (int)newState;
+        if (debugLog) Debug.Log($"[Монстр] Состояние: {newState}");
         if (newState == State.Chase) { chaseTime = 0f; lostTime = 0f; }
+        if (newState == State.Carrying)
+        {
+            carryTimer = 0f;
+            nextCarryLogTime = 0f;
+            lastCheckPosition = transform.position;
+            nextCheckTime = Time.time + 1f;
+            stuckSeconds = 0f;
+        }
     }
 
     // ───────────── Поиск цели ─────────────
